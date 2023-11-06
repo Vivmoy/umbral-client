@@ -3,18 +3,15 @@ package main
 import (
 	"crypto/ecdsa"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"math/big"
-	"os"
 	"path"
+	"strconv"
 	"strings"
 	"walk-client/curve"
-	"walk-client/form"
 	"walk-client/recrypt"
-	"walk-client/utils"
 
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
@@ -26,10 +23,11 @@ func main() {
 	var outPri, outPub *walk.TextEdit
 	var inAPri, inBPub, outRk, outPubX *walk.TextEdit
 	var outFileDes *walk.TextEdit
-	var inEncPub, outE, outV, outS *walk.TextEdit
+	var inEncPub, inCondition, outE, outV, outS *walk.TextEdit
 	var inRK, inE, inV, inS, outNewE, outNewV, outNewS *walk.TextEdit
-	var capsule, aCapsule, newCapsule *recrypt.Capsule
+	var capsule *recrypt.Capsule
 	var inDecAPri, inDecBPri *walk.TextEdit
+	var inAE, inAV, inAS, inAC *walk.TextEdit
 
 	MainWindow{
 		Title:    "qogry-client",
@@ -98,6 +96,7 @@ func main() {
 			HSplitter{
 				Children: []Widget{
 					TextEdit{AssignTo: &inEncPub, Text: "在这里输入加密者公钥..."},
+					TextEdit{AssignTo: &inCondition, Text: "在这里输入加密条件..."},
 					// 为了方便本地测试，故保留
 					TextEdit{AssignTo: &outE, ReadOnly: true, Text: "生成的CKA.E信息"},
 					TextEdit{AssignTo: &outV, ReadOnly: true, Text: "生成的CKA.V信息"},
@@ -110,32 +109,22 @@ func main() {
 					filePath := outFileDes.Text()
 					suffix := path.Ext(filePath)
 					fileName := strings.TrimSuffix(filePath, suffix)
-					encFilePath := fileName + "_encrypt" + ".json"
-					plain := fileToString(filePath)
+					encFilePath := fileName + "_encrypt" + suffix
+					//plain := fileToString(filePath)
 					encPub := decodePublicKey(inEncPub.Text())
-					cipher, capsule, err := recrypt.Encrypt(plain, encPub)
-
-					ciphercase := &form.CipherCases{
-						File_Type: suffix,
-						CapsuleE:  encodePublicKey(capsule.E),
-						CapsuleV:  encodePublicKey(capsule.V),
-						CapsuleS:  capsule.S.String(),
-						Cipher:    cipher,
-					}
-
-					file, _ := os.Create(encFilePath)
-					defer file.Close()
-					buf, _ := json.MarshalIndent(ciphercase, "", "	")
-					file.Write(buf)
+					strCondition := inCondition.Text()
+					tmp, _ := strconv.ParseInt(strCondition, 10, 64)
+					condition := big.NewInt(tmp)
+					cipher_before, err := recrypt.Encrypt(encPub, filePath, encFilePath, condition)
 
 					// 为了方便本地测试，故保留
 					if err != nil {
 						outFileDes.SetText("File Encrypt Error:" + err.Error())
 					} else {
 						outFileDes.SetText("File Encrypt Success!")
-						outE.SetText(encodePublicKey(capsule.E))
-						outV.SetText(encodePublicKey(capsule.V))
-						outS.SetText(capsule.S.String())
+						outE.SetText(encodePublicKey(cipher_before.Capsule.E))
+						outV.SetText(encodePublicKey(cipher_before.Capsule.V))
+						outS.SetText(cipher_before.Capsule.S.String())
 					}
 				},
 			},
@@ -183,42 +172,44 @@ func main() {
 			HSplitter{
 				Children: []Widget{
 					TextEdit{AssignTo: &inDecAPri, Text: "在这里输入解密私钥..."},
+					TextEdit{AssignTo: &inAE, Text: "在这里输入CKA.E..."},
+					TextEdit{AssignTo: &inAV, Text: "在这里输入CKA.V..."},
+					TextEdit{AssignTo: &inAS, Text: "在这里输入CKA.S..."},
+					TextEdit{AssignTo: &inAC, Text: "在这里输入解密条件..."},
 				},
 			},
 			PushButton{
 				Text: "A解密文件",
 				OnClicked: func() {
 					filePath := outFileDes.Text()
-					JsonParse := utils.NewJsonStruct()
-					v := form.ReEncryptCases{}
-					JsonParse.Load(filePath, &v)
 
 					aPriKey := decodePrivateKey(inDecAPri.Text())
-					ns := new(big.Int)
-					ns, sok := ns.SetString(v.CapsuleS, 10)
+					s := new(big.Int)
+					s, sok := s.SetString(inAS.Text(), 10)
 					if !sok {
-						outFileDes.SetText("newS生成失败")
+						outFileDes.SetText("s生成失败")
 					}
-					aCapsule = &recrypt.Capsule{
-						E: decodePublicKey(v.CapsuleE),
-						V: decodePublicKey(v.CapsuleV),
-						S: ns,
+					aCipherBefore := &recrypt.Cipher_before_re{
+						Capsule: &recrypt.Capsule{
+							E: decodePublicKey(inAE.Text()),
+							V: decodePublicKey(inAV.Text()),
+							S: s,
+						},
 					}
 
-					suffix := v.File_Type
+					suffix := path.Ext(filePath)
 					fileName := strings.TrimSuffix(filePath, suffix)
 					decFilePath := fileName + "_self_decrypt" + suffix
+					strCondition := inAC.Text()
+					tmp, _ := strconv.ParseInt(strCondition, 10, 64)
+					condition := big.NewInt(tmp)
 
-					plain, err := recrypt.DecryptOnMyPriKey(aPriKey, aCapsule, v.Cipher)
+					err := recrypt.Decrypt(aPriKey, aCipherBefore, filePath, decFilePath, condition)
 					if err != nil {
 						outFileDes.SetText("File Decrypt Error:" + err.Error())
 					} else {
 						outFileDes.SetText("File Decrypt Success!")
 					}
-
-					file, _ := os.Create(decFilePath)
-					defer file.Close()
-					file.Write(plain)
 				},
 			},
 			HSplitter{
@@ -229,38 +220,38 @@ func main() {
 			PushButton{
 				Text: "B解密文件",
 				OnClicked: func() {
-					filePath := outFileDes.Text()
-					JsonParse := utils.NewJsonStruct()
-					v := form.ReEncryptCases{}
-					JsonParse.Load(filePath, &v)
+					// filePath := outFileDes.Text()
+					// JsonParse := utils.NewJsonStruct()
+					// v := form.ReEncryptCases{}
+					// JsonParse.Load(filePath, &v)
 
-					bPriKey := decodePrivateKey(inDecBPri.Text())
-					ns := new(big.Int)
-					ns, sok := ns.SetString(v.NewCapsuleS, 10)
-					if !sok {
-						outFileDes.SetText("newS生成失败")
-					}
-					newCapsule = &recrypt.Capsule{
-						E: decodePublicKey(v.NewCapsuleE),
-						V: decodePublicKey(v.NewCapsuleV),
-						S: ns,
-					}
-					pubX := decodePublicKey(v.PubX)
+					// bPriKey := decodePrivateKey(inDecBPri.Text())
+					// ns := new(big.Int)
+					// ns, sok := ns.SetString(v.NewCapsuleS, 10)
+					// if !sok {
+					// 	outFileDes.SetText("newS生成失败")
+					// }
+					// newCapsule = &recrypt.Capsule{
+					// 	E: decodePublicKey(v.NewCapsuleE),
+					// 	V: decodePublicKey(v.NewCapsuleV),
+					// 	S: ns,
+					// }
+					// pubX := decodePublicKey(v.PubX)
 
-					suffix := v.File_Type
-					fileName := strings.TrimSuffix(filePath, suffix)
-					decFilePath := fileName + "_decrypt" + suffix
+					// suffix := v.File_Type
+					// fileName := strings.TrimSuffix(filePath, suffix)
+					// decFilePath := fileName + "_decrypt" + suffix
 
-					plain, err := recrypt.Decrypt(bPriKey, newCapsule, pubX, v.Cipher)
-					if err != nil {
-						outFileDes.SetText("File Decrypt Error:" + err.Error())
-					} else {
-						outFileDes.SetText("File Decrypt Success!")
-					}
+					// plain, err := recrypt.Decrypt(bPriKey, newCapsule, pubX, v.Cipher)
+					// if err != nil {
+					// 	outFileDes.SetText("File Decrypt Error:" + err.Error())
+					// } else {
+					// 	outFileDes.SetText("File Decrypt Success!")
+					// }
 
-					file, _ := os.Create(decFilePath)
-					defer file.Close()
-					file.Write(plain)
+					// file, _ := os.Create(decFilePath)
+					// defer file.Close()
+					// file.Write(plain)
 				},
 			},
 		},

@@ -48,7 +48,7 @@ func OFBFileEncrypt(key string, iv []byte, infileName string, encfileName string
 	}
 	// If the key is unique for each ciphertext, then it's ok to use a zero
 	// IV.  var iv [aes.BlockSize]byte
-	stream := cipher.NewOFB(block, iv[:])
+	stream := cipher.NewOFB(block, iv[:block.BlockSize()])
 	outFile, err := os.OpenFile(encfileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
@@ -75,7 +75,7 @@ func OFBFileDecrypt(key string, iv []byte, encfileName string, decfileName strin
 	}
 	// If the key is unique for each ciphertext, then it's ok to use a zero
 	// IV.  var iv [aes.BlockSize]byte
-	stream := cipher.NewOFB(block, iv[:])
+	stream := cipher.NewOFB(block, iv[:block.BlockSize()])
 	outFile, err := os.OpenFile(decfileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
