@@ -1,0 +1,6 @@
+# dependencies
+/vendor
+/.idea
+*.exe
+/test
+*.log
