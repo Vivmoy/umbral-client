@@ -12,13 +12,12 @@ import (
 	"strings"
 )
 
-// Generate Private and Public key-pair
-func GenerateKeys() (*ecdsa.PrivateKey, *ecdsa.PublicKey, error) {
+func GenerateKeys() (*ecdsa.PublicKey, *ecdsa.PrivateKey, error) {
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}
-	return privateKey, &privateKey.PublicKey, nil
+	return &privateKey.PublicKey, privateKey, nil
 }
 
 // ECDSA Sign

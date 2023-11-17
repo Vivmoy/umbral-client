@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"encoding/hex"
+	"crypto/rand"
 	"math/big"
 	"walk-client/curve"
+	"walk-client/math"
 
 	"golang.org/x/crypto/sha3"
 )
@@ -35,47 +36,23 @@ func HashToCurve(hash []byte) *big.Int {
 	return hashInt.Mod(hashInt, curve.N)
 }
 
-// convert private key to string
-func PrivateKeyToString(privateKey *ecdsa.PrivateKey) string {
-	return hex.EncodeToString(privateKey.D.Bytes())
+func GetCoefficients(a *big.Int, d *big.Int, t int) ([]*big.Int, error) {
+	coefficients := []*big.Int{math.BigIntMul(a, math.GetInvert(d))}
+	for i := 1; i < t; i++ {
+		f, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, err
+		}
+		coefficients = append(coefficients, f.D)
+	}
+	return coefficients, nil
 }
 
-// convert string to private key
-func PrivateKeyStrToKey(privateKeyStr string) (*ecdsa.PrivateKey, error) {
-	priKeyAsBytes, err := hex.DecodeString(privateKeyStr)
-	if err != nil {
-		return nil, err
+func GetPolynomialValue(coefficients []*big.Int, x *big.Int) *big.Int {
+	t := len(coefficients)
+	result := coefficients[t-1]
+	for i := 1; i < t; i++ {
+		result = math.BigIntAdd(math.BigIntMul(result, x), coefficients[t-i-1])
 	}
-	d := new(big.Int).SetBytes(priKeyAsBytes)
-	// compute public key
-	x, y := elliptic.P256().ScalarBaseMult(priKeyAsBytes)
-	pubKey := ecdsa.PublicKey{
-		curve.CURVE, x, y,
-	}
-	key := &ecdsa.PrivateKey{
-		D:         d,
-		PublicKey: pubKey,
-	}
-	return key, nil
-}
-
-// convert public key to string
-func PublicKeyToString(publicKey *ecdsa.PublicKey) string {
-	pubKeyBytes := curve.PointToBytes(publicKey)
-	return hex.EncodeToString(pubKeyBytes)
-}
-
-// convert public key string to key
-func PublicKeyStrToKey(pubKey string) (*ecdsa.PublicKey, error) {
-	pubKeyAsBytes, err := hex.DecodeString(pubKey)
-	if err != nil {
-		return nil, err
-	}
-	x, y := elliptic.Unmarshal(curve.CURVE, pubKeyAsBytes)
-	key := &ecdsa.PublicKey{
-		Curve: curve.CURVE,
-		X:     x,
-		Y:     y,
-	}
-	return key, nil
+	return result
 }

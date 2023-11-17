@@ -1,10 +1,9 @@
 package recrypt
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"encoding/gob"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"math/big"
@@ -31,12 +30,12 @@ type Cipher_after_re struct {
 }
 
 type KFrag struct {
-	id  *ecdsa.PrivateKey
-	rk  *big.Int
+	Id  *ecdsa.PrivateKey
+	Rk  *big.Int
 	X_A *ecdsa.PublicKey
 	U_1 *ecdsa.PublicKey
-	z_1 *big.Int
-	z_2 *big.Int
+	Z_1 *big.Int
+	Z_2 *big.Int
 	C   *ecdsa.PublicKey
 	T   *big.Int
 }
@@ -44,78 +43,16 @@ type KFrag struct {
 type CFrag struct {
 	E_1 *ecdsa.PublicKey
 	V_1 *ecdsa.PublicKey
-	id  *ecdsa.PrivateKey
+	Id  *ecdsa.PrivateKey
 	X_A *ecdsa.PublicKey
 	T   *big.Int
-}
-
-func encryptKeyGen(pubKey *ecdsa.PublicKey) (capsule *Capsule, keyBytes []byte, err error) {
-	s := new(big.Int)
-	// generate E,V key-pairs
-	priE, pubE, err := curve.GenerateKeys()
-	priV, pubV, err := curve.GenerateKeys()
-	if err != nil {
-		return nil, nil, err
-	}
-	// get H2(E || V)
-	h := utils.HashToCurve(
-		utils.ConcatBytes(
-			curve.PointToBytes(pubE),
-			curve.PointToBytes(pubV)))
-	// get s = v + e * H2(E || V)
-	s = math.BigIntAdd(priV.D, math.BigIntMul(priE.D, h))
-	// get (pk_A)^{e+v}
-	point := curve.PointScalarMul(pubKey, math.BigIntAdd(priE.D, priV.D))
-	// generate aes key
-	keyBytes, err = utils.Sha3Hash(curve.PointToBytes(point))
-	if err != nil {
-		return nil, nil, err
-	}
-	capsule = &Capsule{
-		E: pubE,
-		V: pubV,
-		S: s,
-	}
-	fmt.Println("old key:", hex.EncodeToString(keyBytes))
-	return capsule, keyBytes, nil
-}
-
-// Recreate aes key
-func RecreateAESKeyByMyPriKey(capsule *Capsule, aPriKey *ecdsa.PrivateKey) (keyBytes []byte, err error) {
-	point1 := curve.PointScalarAdd(capsule.E, capsule.V)
-	point := curve.PointScalarMul(point1, aPriKey.D)
-	// generate aes key
-	keyBytes, err = utils.Sha3Hash(curve.PointToBytes(point))
-	if err != nil {
-		return nil, err
-	}
-	return keyBytes, nil
-}
-
-func RecreateAESKeyByMyPriKeyStr(capsule *Capsule, aPriKeyStr string) (keyBytes []byte, err error) {
-	aPriKey, err := utils.PrivateKeyStrToKey(aPriKeyStr)
-	if err != nil {
-		return nil, err
-	}
-	return RecreateAESKeyByMyPriKey(capsule, aPriKey)
-}
-
-func EncryptMessageByAESKey(message []byte, keyBytes []byte) (cipherText []byte, err error) {
-	key := hex.EncodeToString(keyBytes)
-	// use aes gcm algorithm to encrypt
-	// mark keyBytes[:12] as nonce
-	cipherText, err = GCMEncrypt(message, key[:32], keyBytes[:12], nil)
-	if err != nil {
-		return nil, err
-	}
-	return cipherText, nil
 }
 
 func Encapsulate(pubKey *ecdsa.PublicKey, condition *big.Int) (keyBytes []byte, capsule *Capsule, err error) {
 	s := new(big.Int)
 	// generate E,V key-pairs
-	priE, pubE, err := curve.GenerateKeys()
-	priV, pubV, err := curve.GenerateKeys()
+	pubE, priE, err := curve.GenerateKeys()
+	pubV, priV, err := curve.GenerateKeys()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -162,105 +99,107 @@ func Encrypt(pubKey *ecdsa.PublicKey, infileName string, encfileName string, con
 	return cipher, nil
 }
 
-// encrypt file
-func EncryptFile(inputFile, outPutFile string, pubKey *ecdsa.PublicKey) (capsule *Capsule, err error) {
-	capsule, keyBytes, err := encryptKeyGen(pubKey)
+func ReKeyGen(aPriKey *ecdsa.PrivateKey, bPubKey *ecdsa.PublicKey, N int, t int, condition *big.Int) ([]KFrag, error) {
+	if t < 2 {
+		return nil, fmt.Errorf("%s", "t must bigger than 1")
+	}
+	X_A, x_A, err := curve.GenerateKeys()
 	if err != nil {
 		return nil, err
 	}
-	key := hex.EncodeToString(keyBytes)
-	// use aes ofb algorithm to encrypt
-	// mark keyBytes[:16] as nonce
-	err = OFBFileEncrypt(key[:32], keyBytes[:16], inputFile, outPutFile)
-	if err != nil {
-		return nil, err
-	}
-	return capsule, nil
-}
-
-// encrypt file by pubkey str
-func EncryptFileByStr(inputFile, outPutFile, pubKeyStr string) (capsule *Capsule, err error) {
-	key, err := utils.PublicKeyStrToKey(pubKeyStr)
-	if err != nil {
-		return nil, err
-	}
-	return EncryptFile(inputFile, outPutFile, key)
-}
-
-// generate re-encryption key and sends it to Server
-// rk = sk_A * d^{-1}
-func ReKeyGen(aPriKey *ecdsa.PrivateKey, bPubKey *ecdsa.PublicKey) (*big.Int, *ecdsa.PublicKey, error) {
-	// generate x,X key-pair
-	priX, pubX, err := curve.GenerateKeys()
-	if err != nil {
-		return nil, nil, err
-	}
-	// get d = H3(X_A || pk_B || pk_B^{x_A})
-	point := curve.PointScalarMul(bPubKey, priX.D)
+	// get d = H3(X_A,pk_b,pk_b^(x_A))
 	d := utils.HashToCurve(
 		utils.ConcatBytes(
 			utils.ConcatBytes(
-				curve.PointToBytes(pubX),
+				curve.PointToBytes(X_A),
 				curve.PointToBytes(bPubKey)),
-			curve.PointToBytes(point)))
-	// rk = sk_A * d^{-1}
-	rk := math.BigIntMul(aPriKey.D, math.GetInvert(d))
-	rk.Mod(rk, curve.N)
-	return rk, pubX, nil
-}
-
-func ReKeyGenByStr(aPriKeyStr, bPubKeyStr string) (*big.Int, *ecdsa.PublicKey, error) {
-	aPriKey, err := utils.PrivateKeyStrToKey(aPriKeyStr)
-	if err != nil {
-		return nil, nil, err
-	}
-	bPubKey, err := utils.PublicKeyStrToKey(bPubKeyStr)
-	if err != nil {
-		return nil, nil, err
-	}
-	return ReKeyGen(aPriKey, bPubKey)
-}
-
-// Server executes Re-Encryption method
-func ReEncryption(rk *big.Int, capsule *Capsule) (*Capsule, error) {
-	// check g^s == V * E^{H2(E || V)}
-	x1, y1 := curve.CURVE.ScalarBaseMult(capsule.S.Bytes())
-	tempX, tempY := curve.CURVE.ScalarMult(capsule.E.X, capsule.E.Y,
-		utils.HashToCurve(
-			utils.ConcatBytes(
-				curve.PointToBytes(capsule.E),
-				curve.PointToBytes(capsule.V))).Bytes())
-	x2, y2 := curve.CURVE.Add(capsule.V.X, capsule.V.Y, tempX, tempY)
-	// if check failed return error
-	if x1.Cmp(x2) != 0 || y1.Cmp(y2) != 0 {
-		return nil, fmt.Errorf("%s", "Capsule not match")
-	}
-	// E' = E^{rk}, V' = V^{rk}
-	newCapsule := &Capsule{
-		E: curve.PointScalarMul(capsule.E, rk),
-		V: curve.PointScalarMul(capsule.V, rk),
-		S: capsule.S,
-	}
-	return newCapsule, nil
-}
-
-func decryptKeyGen(bPriKey *ecdsa.PrivateKey, capsule *Capsule, pubX *ecdsa.PublicKey) (keyBytes []byte, err error) {
-	// S = X_A^{sk_B}
-	S := curve.PointScalarMul(pubX, bPriKey.D)
-	// recreate d = H3(X_A || pk_B || S)
-	d := utils.HashToCurve(
-		utils.ConcatBytes(
-			utils.ConcatBytes(
-				curve.PointToBytes(pubX),
-				curve.PointToBytes(&bPriKey.PublicKey)),
-			curve.PointToBytes(S)))
-	point := curve.PointScalarMul(
-		curve.PointScalarAdd(capsule.E, capsule.V), d)
-	keyBytes, err = utils.Sha3Hash(curve.PointToBytes(point))
+			curve.PointToBytes(curve.PointScalarMul(bPubKey, x_A.D))))
+	coefficients, err := utils.GetCoefficients(aPriKey.D, d, t)
+	//fmt.Println("coefficients:", coefficients)
 	if err != nil {
 		return nil, err
 	}
-	return keyBytes, nil
+	// get D = H6(pk_a,pk_b,pk_b^a)
+	D := utils.HashToCurve(
+		utils.ConcatBytes(
+			utils.ConcatBytes(
+				curve.PointToBytes(&aPriKey.PublicKey),
+				curve.PointToBytes(bPubKey)),
+			curve.PointToBytes(curve.PointScalarMul(bPubKey, aPriKey.D))))
+	KF := []KFrag{}
+	for i := 0; i < N; i++ {
+		Y, y, err := curve.GenerateKeys()
+		if err != nil {
+			return nil, err
+		}
+		id, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, err
+		}
+		// get s_x = H5(id,D)
+		s_x := utils.HashToCurve(
+			utils.ConcatBytes(
+				id.D.Bytes(),
+				D.Bytes()))
+		rk := utils.GetPolynomialValue(coefficients, s_x)
+		U_1 := curve.BigIntMulBase(rk)
+		// get z_1 = H4(Y,id,pk_a,pk_b,U_1,X_A)
+		z_1 := utils.HashToCurve(
+			utils.ConcatBytes(
+				utils.ConcatBytes(
+					utils.ConcatBytes(
+						utils.ConcatBytes(
+							utils.ConcatBytes(
+								curve.PointToBytes(Y),
+								id.D.Bytes()),
+							curve.PointToBytes(&aPriKey.PublicKey)),
+						curve.PointToBytes(bPubKey)),
+					curve.PointToBytes(U_1)),
+				curve.PointToBytes(X_A)))
+		// get z_2 = y - a × z_1
+		z_2 := math.BigIntSub(y.D, math.BigIntMul(aPriKey.D, z_1))
+		kFrag := KFrag{
+			Id:  id,
+			Rk:  rk,
+			X_A: X_A,
+			U_1: U_1,
+			Z_1: z_1,
+			Z_2: z_2,
+			C:   curve.BigIntMulBase(condition),
+			T:   math.BigIntMul(condition, math.GetInvert(utils.HashToCurve(curve.PointToBytes(curve.BigIntMulBase(big.NewInt(int64(t))))))),
+		}
+		KF = append(KF, kFrag)
+	}
+	// KF长度为N
+	return KF, nil
+}
+
+func ReEncapsulate(kFrag KFrag, capsule *Capsule) (*CFrag, error) {
+	// if !kFrag.C.Equal(capsule.C) {
+	// 	return nil, fmt.Errorf("%s", "condition not match")
+	// }
+	cFrag := CFrag{
+		E_1: curve.PointScalarMul(capsule.E, kFrag.Rk),
+		V_1: curve.PointScalarMul(capsule.V, kFrag.Rk),
+		Id:  kFrag.Id,
+		X_A: kFrag.X_A,
+		T:   kFrag.T,
+	}
+	return &cFrag, nil
+}
+
+func ReEncrypt(KF []KFrag, cipher *Cipher_before_re) ([]CFrag, error) {
+	CF := []CFrag{}
+	l := len(KF)
+	for i := 0; i < l; i++ {
+		cFrag, err := ReEncapsulate(KF[i], cipher.Capsule)
+		if err != nil {
+			return nil, err
+		}
+		CF = append(CF, *cFrag)
+	}
+	// re_cipher中CF长度为KF的长度，即默认为N
+	return CF, nil
 }
 
 func Decapsulate(aPriKey *ecdsa.PrivateKey, capsule *Capsule, condition *big.Int) (keyBytes []byte, err error) {
@@ -287,86 +226,84 @@ func Decrypt(aPriKey *ecdsa.PrivateKey, cipher *Cipher_before_re, encfileName st
 	return err
 }
 
-// decrypt file
-func DecryptFile(inputFile, outPutFile string, bPriKey *ecdsa.PrivateKey, capsule *Capsule, pubX *ecdsa.PublicKey) (err error) {
-	keyBytes, err := decryptKeyGen(bPriKey, capsule, pubX)
+func DecapsulateFrags(bPriKey *ecdsa.PrivateKey, aPubKey *ecdsa.PublicKey, CF []CFrag, t int) ([]byte, error) {
+	// get D = H6(pk_a,pk_b,pk_a^b)
+	D := utils.HashToCurve(
+		utils.ConcatBytes(
+			utils.ConcatBytes(
+				curve.PointToBytes(aPubKey),
+				curve.PointToBytes(&bPriKey.PublicKey)),
+			curve.PointToBytes(curve.PointScalarMul(aPubKey, bPriKey.D))))
+
+	// 此处假设传入的CF切片长度为t
+	//t := len(CF)
+
+	s_x := []*big.Int{}
+	for i := 0; i < t; i++ {
+		s_x_i := utils.HashToCurve(
+			utils.ConcatBytes(
+				CF[i].Id.D.Bytes(),
+				D.Bytes()))
+		s_x = append(s_x, s_x_i)
+	}
+
+	lamda_S := []*big.Int{}
+	for i := 1; i <= t; i++ {
+		lamda_i_S := big.NewInt(1)
+		for j := 1; j <= t; j++ {
+			if j == i {
+				continue
+			} else {
+				lamda_i_S = math.BigIntMul(lamda_i_S, (math.BigIntMul(s_x[j-1], math.GetInvert(math.BigIntSub(s_x[j-1], s_x[i-1])))))
+			}
+		}
+		lamda_S = append(lamda_S, lamda_i_S)
+	}
+
+	E := curve.PointScalarMul(CF[0].E_1, lamda_S[0])
+	V := curve.PointScalarMul(CF[0].V_1, lamda_S[0])
+
+	for i := 1; i < t; i++ {
+		E = curve.PointScalarAdd(E, curve.PointScalarMul(CF[i].E_1, lamda_S[i]))
+		V = curve.PointScalarAdd(V, curve.PointScalarMul(CF[i].V_1, lamda_S[i]))
+	}
+
+	// get d = H3(X_A,pk_b,X_A^b)
+	d := utils.HashToCurve(
+		utils.ConcatBytes(
+			utils.ConcatBytes(
+				curve.PointToBytes(CF[0].X_A),
+				curve.PointToBytes(&bPriKey.PublicKey)),
+			curve.PointToBytes(curve.PointScalarMul(CF[0].X_A, bPriKey.D))))
+
+	condition := math.BigIntMul(CF[0].T, utils.HashToCurve(curve.PointToBytes(curve.BigIntMulBase(big.NewInt(int64(t))))))
+	point1 := curve.PointScalarMul(curve.PointScalarAdd(E, V), d)
+	point := curve.PointScalarMul(point1, condition)
+	keyBytes, err := utils.Sha3Hash(curve.PointToBytes(point))
+	if err != nil {
+		return nil, err
+	}
+	return keyBytes, nil
+}
+
+func DecryptFrags(aPubKey *ecdsa.PublicKey, bPriKey *ecdsa.PrivateKey, CF []CFrag, t int, encfileName string, decfileName string) (err error) {
+	// 此处假设传入的CF切片长度为默认的N
+	// cf := []CFrag{}
+	// for i := 0; i < t; i++ {
+	// 	cf = append(cf, CF[i])
+	// }
+
+	// cf = append(cf, CF[1])
+	// cf = append(cf, CF[9])
+	// cf = append(cf, CF[5])
+	// cf = append(cf, CF[8])
+	// cf = append(cf, CF[0])
+
+	keyBytes, err := DecapsulateFrags(bPriKey, aPubKey, CF, t)
 	if err != nil {
 		return err
 	}
 	key := hex.EncodeToString(keyBytes)
-	// use aes gcm to decrypt
-	// mark keyBytes[:16] as nonce
-	err = OFBFileDecrypt(key[:32], keyBytes[:16], inputFile, outPutFile)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// decrypt file by str
-func DecryptFileByStr(inputFile, outPutFile string, bPriKeyStr string, capsule *Capsule, pubXStr string) (err error) {
-	bPriKey, err := utils.PrivateKeyStrToKey(bPriKeyStr)
-	if err != nil {
-		return err
-	}
-	pubX, err := utils.PublicKeyStrToKey(pubXStr)
-	if err != nil {
-		return err
-	}
-	return DecryptFile(inputFile, outPutFile, bPriKey, capsule, pubX)
-}
-
-// Decrypt by my own private key
-func DecryptOnMyPriKey(aPriKey *ecdsa.PrivateKey, capsule *Capsule, cipherText []byte) (plainText []byte, err error) {
-	keyBytes, err := RecreateAESKeyByMyPriKey(capsule, aPriKey)
-	if err != nil {
-		return nil, err
-	}
-	key := hex.EncodeToString(keyBytes)
-	// use aes gcm algorithm to encrypt
-	// mark keyBytes[:12] as nonce
-	plainText, err = GCMDecrypt(cipherText, key[:32], keyBytes[:12], nil)
-	return plainText, err
-}
-
-// Decrypt by A's private key
-func DecryptOnAPriKey(aPriKey *ecdsa.PrivateKey, capsule *Capsule, inputFile string, outPutFile string) (err error) {
-	keyBytes, err := RecreateAESKeyByMyPriKey(capsule, aPriKey)
-	if err != nil {
-		return nil
-	}
-	key := hex.EncodeToString(keyBytes)
-	err = OFBFileDecrypt(key[:32], keyBytes[:16], inputFile, outPutFile)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func DecryptOnMyOwnStrKey(aPriKeyStr string, capsule *Capsule, cipherText []byte) (plainText []byte, err error) {
-	aPriKey, err := utils.PrivateKeyStrToKey(aPriKeyStr)
-	if err != nil {
-		return nil, err
-	}
-	return DecryptOnMyPriKey(aPriKey, capsule, cipherText)
-}
-
-func EncodeCapsule(capsule Capsule) (capsuleAsBytes []byte, err error) {
-	gob.Register(elliptic.P256())
-	buf := new(bytes.Buffer)
-	enc := gob.NewEncoder(buf)
-	if err = enc.Encode(capsule); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func DecodeCapsule(capsuleAsBytes []byte) (capsule Capsule, err error) {
-	capsule = Capsule{}
-	gob.Register(elliptic.P256())
-	dec := gob.NewDecoder(bytes.NewBuffer(capsuleAsBytes))
-	if err = dec.Decode(&capsule); err != nil {
-		return capsule, err
-	}
-	return capsule, nil
+	err = OFBFileDecrypt(key[:32], keyBytes[:12], encfileName, decfileName)
+	return err
 }

@@ -3,10 +3,12 @@ package main
 import (
 	"crypto/ecdsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"math/big"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -21,16 +23,15 @@ func main() {
 	// walk部分---------------------------------------------------------------------------------------
 	var mw *walk.MainWindow
 	var outPri, outPub *walk.TextEdit
-	var inAPri, inBPub, outRk, outPubX *walk.TextEdit
-	var outFileDes *walk.TextEdit
+	var inAPri, inBPub, inRKCondition, inN, inT, inBT *walk.TextEdit
+	var outFileDes, inReFile *walk.TextEdit
 	var inEncPub, inCondition, outE, outV, outS *walk.TextEdit
-	var inRK, inE, inV, inS, outNewE, outNewV, outNewS *walk.TextEdit
-	var capsule *recrypt.Capsule
-	var inDecAPri, inDecBPri *walk.TextEdit
+	var inE, inV, inS *walk.TextEdit
+	var inDecAPri, inDecAPub, inDecBPri *walk.TextEdit
 	var inAE, inAV, inAS, inAC *walk.TextEdit
 
 	MainWindow{
-		Title:    "qogry-client",
+		Title:    "umbral client",
 		Size:     Size{Width: 1200, Height: 750},
 		AssignTo: &mw,
 		Layout:   VBox{},
@@ -56,6 +57,26 @@ func main() {
 				},
 			},
 			HSplitter{
+				MaxSize: Size{Height: 30},
+				Children: []Widget{
+					TextEdit{AssignTo: &inReFile, ReadOnly: true, Text: "选择重加密文件"},
+				},
+			},
+			PushButton{
+				Text: "选择文件",
+				OnClicked: func() {
+					dlg := new(walk.FileDialog)
+					dlg.Title = "选择文件"
+					if ok, err := dlg.ShowOpen(mw); err != nil {
+						inReFile.SetText(err.Error())
+					} else if !ok {
+						inReFile.SetText("未选择文件")
+					} else {
+						inReFile.SetText(dlg.FilePath)
+					}
+				},
+			},
+			HSplitter{
 				Children: []Widget{
 					TextEdit{AssignTo: &outPri, ReadOnly: true, Text: "生成的私钥"},
 					TextEdit{AssignTo: &outPub, ReadOnly: true, Text: "生成的公钥"},
@@ -64,7 +85,7 @@ func main() {
 			PushButton{
 				Text: "生成密钥对",
 				OnClicked: func() {
-					aPriKey, aPubKey, _ := curve.GenerateKeys()
+					aPubKey, aPriKey, _ := curve.GenerateKeys()
 					pri := encodePrivateKey(aPriKey)
 					pub := encodePublicKey(aPubKey)
 					// outPri.SetText(strings.ToUpper("inTE.Text()"))
@@ -76,8 +97,9 @@ func main() {
 				Children: []Widget{
 					TextEdit{AssignTo: &inAPri, Text: "在这里输入自己的私钥..."},
 					TextEdit{AssignTo: &inBPub, Text: "在这里输入对方的公钥..."},
-					TextEdit{AssignTo: &outRk, ReadOnly: true, Text: "生成的重加密密钥"},
-					TextEdit{AssignTo: &outPubX, ReadOnly: true, Text: "生成的中间密钥参数"},
+					TextEdit{AssignTo: &inN, Text: "在这里输入总数值N..."},
+					TextEdit{AssignTo: &inT, Text: "在这里输入门限值t..."},
+					TextEdit{AssignTo: &inRKCondition, Text: "在这里输入重加密条件..."},
 				},
 			},
 			PushButton{
@@ -85,12 +107,17 @@ func main() {
 				OnClicked: func() {
 					aPriKey := decodePrivateKey(inAPri.Text())
 					bPubKey := decodePublicKey(inBPub.Text())
-					rk, pubX, err := recrypt.ReKeyGen(aPriKey, bPubKey)
-					if err != nil {
-						fmt.Println(err)
-					}
-					outRk.SetText(rk.String())
-					outPubX.SetText(encodePublicKey(pubX))
+					N, _ := strconv.Atoi(inN.Text())
+					t, _ := strconv.Atoi(inT.Text())
+					strCondition := inRKCondition.Text()
+					tmp, _ := strconv.ParseInt(strCondition, 10, 64)
+					condition := big.NewInt(tmp)
+					KF, _ := recrypt.ReKeyGen(aPriKey, bPubKey, N, t, condition)
+
+					file, _ := os.Create("KF.json")
+					defer file.Close()
+					buf, _ := json.MarshalIndent(KF, "", "	")
+					file.Write(buf)
 				},
 			},
 			HSplitter{
@@ -130,43 +157,43 @@ func main() {
 			},
 			HSplitter{
 				Children: []Widget{
-					TextEdit{AssignTo: &inRK, Text: "在这里输入重加密密钥..."},
 					TextEdit{AssignTo: &inE, Text: "在这里输入CKA.E..."},
 					TextEdit{AssignTo: &inV, Text: "在这里输入CKA.V..."},
 					TextEdit{AssignTo: &inS, Text: "在这里输入CKA.S..."},
-					TextEdit{AssignTo: &outNewE, ReadOnly: true, Text: "生成的CKB.E信息"},
-					TextEdit{AssignTo: &outNewV, ReadOnly: true, Text: "生成的CKB.V信息"},
-					TextEdit{AssignTo: &outNewS, ReadOnly: true, Text: "生成的CKB.S信息"},
 				},
 			},
 			// 为了方便本地测试，故保留
 			PushButton{
 				Text: "模拟重加密",
 				OnClicked: func() {
-					rk := new(big.Int)
-					rk, rok := rk.SetString(inRK.Text(), 10)
-					if !rok {
-						outFileDes.SetText("rk生成失败")
-					}
+					reFilePath := inReFile.Text()
+					data, _ := os.ReadFile(reFilePath)
+					KF := []recrypt.KFrag{}
+					json.Unmarshal(data, &KF)
+
+					// file, _ := os.Create("test.json")
+					// defer file.Close()
+					// buf, _ := json.MarshalIndent(KF, "", "	")
+					// file.Write(buf)
+
 					s := new(big.Int)
 					s, sok := s.SetString(inS.Text(), 10)
 					if !sok {
 						outFileDes.SetText("s生成失败")
 					}
-					capsule = &recrypt.Capsule{
-						E: decodePublicKey(inE.Text()),
-						V: decodePublicKey(inV.Text()),
-						S: s,
+					aCipherBefore := &recrypt.Cipher_before_re{
+						Capsule: &recrypt.Capsule{
+							E: decodePublicKey(inE.Text()),
+							V: decodePublicKey(inV.Text()),
+							S: s,
+						},
 					}
-					newCapsule, err := recrypt.ReEncryption(rk, capsule)
-					if err != nil {
-						outFileDes.SetText("重加密失败:" + err.Error())
-					} else {
-						outFileDes.SetText("重加密成功")
-						outNewE.SetText(encodePublicKey(newCapsule.E))
-						outNewV.SetText(encodePublicKey(newCapsule.V))
-						outNewS.SetText(newCapsule.S.String())
-					}
+					CF, _ := recrypt.ReEncrypt(KF, aCipherBefore)
+
+					file, _ := os.Create("CF.json")
+					defer file.Close()
+					buf, _ := json.MarshalIndent(CF, "", "	")
+					file.Write(buf)
 				},
 			},
 			HSplitter{
@@ -214,44 +241,35 @@ func main() {
 			},
 			HSplitter{
 				Children: []Widget{
-					TextEdit{AssignTo: &inDecBPri, Text: "在这里输入解密私钥..."},
+					TextEdit{AssignTo: &inDecBPri, Text: "在这里输入B的私钥..."},
+					TextEdit{AssignTo: &inDecAPub, Text: "在这里输入A的公钥..."},
+					TextEdit{AssignTo: &inBT, Text: "在这里输入门限值t..."},
 				},
 			},
 			PushButton{
 				Text: "B解密文件",
 				OnClicked: func() {
-					// filePath := outFileDes.Text()
-					// JsonParse := utils.NewJsonStruct()
-					// v := form.ReEncryptCases{}
-					// JsonParse.Load(filePath, &v)
+					reFilePath := inReFile.Text()
+					data, _ := os.ReadFile(reFilePath)
+					CF := []recrypt.CFrag{}
+					json.Unmarshal(data, &CF)
 
-					// bPriKey := decodePrivateKey(inDecBPri.Text())
-					// ns := new(big.Int)
-					// ns, sok := ns.SetString(v.NewCapsuleS, 10)
-					// if !sok {
-					// 	outFileDes.SetText("newS生成失败")
-					// }
-					// newCapsule = &recrypt.Capsule{
-					// 	E: decodePublicKey(v.NewCapsuleE),
-					// 	V: decodePublicKey(v.NewCapsuleV),
-					// 	S: ns,
-					// }
-					// pubX := decodePublicKey(v.PubX)
+					bPriKey := decodePrivateKey(inDecBPri.Text())
+					aPubKey := decodePublicKey(inDecAPub.Text())
 
-					// suffix := v.File_Type
-					// fileName := strings.TrimSuffix(filePath, suffix)
-					// decFilePath := fileName + "_decrypt" + suffix
+					filePath := outFileDes.Text()
+					suffix := path.Ext(filePath)
+					fileName := strings.TrimSuffix(filePath, suffix)
+					decFilePath := fileName + "_decrypt" + suffix
 
-					// plain, err := recrypt.Decrypt(bPriKey, newCapsule, pubX, v.Cipher)
-					// if err != nil {
-					// 	outFileDes.SetText("File Decrypt Error:" + err.Error())
-					// } else {
-					// 	outFileDes.SetText("File Decrypt Success!")
-					// }
+					t, _ := strconv.Atoi(inBT.Text())
 
-					// file, _ := os.Create(decFilePath)
-					// defer file.Close()
-					// file.Write(plain)
+					err := recrypt.DecryptFrags(aPubKey, bPriKey, CF, t, filePath, decFilePath)
+					if err != nil {
+						outFileDes.SetText("File Decrypt Error:" + err.Error())
+					} else {
+						outFileDes.SetText("File Decrypt Success!")
+					}
 				},
 			},
 		},

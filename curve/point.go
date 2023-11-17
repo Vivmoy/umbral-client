@@ -14,17 +14,17 @@ type CurvePoint = ecdsa.PublicKey
 
 func PointScalarAdd(a, b *CurvePoint) *CurvePoint {
 	x, y := CURVE.Add(a.X, a.Y, b.X, b.Y)
-	return &CurvePoint{CURVE, x, y}
+	return &CurvePoint{Curve: CURVE, X: x, Y: y}
 }
 
 func PointScalarMul(a *CurvePoint, k *big.Int) *CurvePoint {
-	x, y := a.ScalarMult(a.X, a.Y, k.Bytes())
-	return &CurvePoint{CURVE, x, y}
+	x, y := CURVE.ScalarMult(a.X, a.Y, k.Bytes())
+	return &CurvePoint{Curve: CURVE, X: x, Y: y}
 }
 
 func BigIntMulBase(k *big.Int) *CurvePoint {
 	x, y := CURVE.ScalarBaseMult(k.Bytes())
-	return &CurvePoint{CURVE, x, y}
+	return &CurvePoint{Curve: CURVE, X: x, Y: y}
 }
 
 func PointToBytes(point *CurvePoint) (res []byte) {

@@ -1,8 +1,8 @@
 package math
 
 import (
+	"goRecrypt/curve"
 	"math/big"
-	"walk-client/curve"
 )
 
 func BigIntAdd(a, b *big.Int) (res *big.Int) {
