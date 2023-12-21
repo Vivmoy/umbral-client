@@ -250,9 +250,24 @@ func main() {
 				Text: "B解密文件",
 				OnClicked: func() {
 					reFilePath := inReFile.Text()
-					data, _ := os.ReadFile(reFilePath)
-					CF := []recrypt.CFrag{}
-					json.Unmarshal(data, &CF)
+					jsonData, _ := ioutil.ReadFile(reFilePath)
+
+					var frag1Array []recrypt.Cfrag
+					json.Unmarshal(jsonData, &frag1Array)
+
+					var CF []recrypt.CFrag
+					for _, frag1 := range frag1Array {
+						tmp1 := new(big.Int)
+						tmp2, _ := tmp1.SetString(frag1.T, 10)
+						frag2 := recrypt.CFrag{
+							E_1: decodePublicKey(frag1.E_1),
+							V_1: decodePublicKey(frag1.V_1),
+							Id:  decodePrivateKey(frag1.Id),
+							X_A: decodePublicKey(frag1.X_A),
+							T:   tmp2,
+						}
+						CF = append(CF, frag2)
+					}
 
 					bPriKey := decodePrivateKey(inDecBPri.Text())
 					aPubKey := decodePublicKey(inDecAPub.Text())

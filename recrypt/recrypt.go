@@ -48,6 +48,14 @@ type CFrag struct {
 	T   *big.Int
 }
 
+type Cfrag struct {
+	E_1 string `json:"E_1"`
+	V_1 string `json:"V_1"`
+	Id  string `json:"Id"`
+	X_A string `json:"X_A"`
+	T   string `json:"T"`
+}
+
 func Encapsulate(pubKey *ecdsa.PublicKey, condition *big.Int) (keyBytes []byte, capsule *Capsule, err error) {
 	s := new(big.Int)
 	// generate E,V key-pairs
